@@ -2,69 +2,82 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
+import pandas as pd
+import unicodedata
 
 app = Flask(__name__)
 CORS(app)
 
+# =========================
+# LIMPIEZA DE TEXTO
+# =========================
+def limpiar_texto(texto):
+    texto = texto.lower()
+    texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('utf-8')
 
-# MODELO IA (respaldo)
+    correcciones = {
+        "picason": "picazon",
+        "comeson": "comezon",
+        "doler": "dolor",
+        "mareos": "mareo",
+        "palpitasion": "palpitacion"
+    }
 
+    for mal, bien in correcciones.items():
+        texto = texto.replace(mal, bien)
 
-sintomas = [
-    "dolor en el pecho","opresion en el pecho","palpitaciones",
-    "dolor de muela","dolor dental","encías inflamadas",
-    "manchas en la piel","picazon en la piel","erupciones",
-    "dolor de cabeza","migraña","mareos",
-    "fiebre","cansancio","malestar general"
-]
+    return texto
 
-especialistas = [
-    "cardiólogo","cardiólogo","cardiólogo",
-    "odontólogo","odontólogo","odontólogo",
-    "dermatólogo","dermatólogo","dermatólogo",
-    "neurólogo","neurólogo","neurólogo",
-    "médico general","médico general","médico general"
-]
+# =========================
+# CARGAR DATASET
+# =========================
+df = pd.read_csv("dataset.csv")
+df.columns = df.columns.str.strip().str.lower()
 
-vectorizer = TfidfVectorizer(ngram_range=(1,2))
+if "sintoma" not in df.columns or "especialista" not in df.columns:
+    raise Exception("El CSV debe tener columnas: sintoma, especialista")
+
+sintomas = df["sintoma"].astype(str).apply(limpiar_texto).tolist()
+especialistas = df["especialista"].astype(str).tolist()
+
+# =========================
+# MODELO IA
+# =========================
+vectorizer = TfidfVectorizer(ngram_range=(1,2), max_features=500)
 X = vectorizer.fit_transform(sintomas)
 
 modelo = MultinomialNB()
 modelo.fit(X, especialistas)
 
 # =========================
-# REGLAS INTELIGENTES
+# REGLAS
 # =========================
-
 def detectar_por_reglas(texto):
     texto = texto.lower()
 
-    # CARDIO
-    if any(p in texto for p in ["pecho", "corazon", "palpitaciones"]):
-        return "cardiólogo"
+    if any(p in texto for p in ["piel", "mancha", "picazon", "comezon", "erupcion", "roncha", "irritacion"]):
+        return "dermatologo"
 
-    # ODONTO
-    if any(p in texto for p in ["muela", "diente", "encía", "dental"]):
-        return "odontólogo"
+    if any(p in texto for p in ["pecho", "corazon", "palpitacion", "presion"]):
+        return "cardiologo"
 
-    # DERMATO
-    if any(p in texto for p in ["piel", "mancha", "picazon", "picazón", "erupcion", "roncha"]):
-        return "dermatólogo"
+    if any(p in texto for p in ["muela", "diente", "encia", "dental"]):
+        return "odontologo"
 
-    # NEURO
-    if any(p in texto for p in ["cabeza", "migraña", "mareo", "mareos"]):
-        return "neurólogo"
+    if any(p in texto for p in ["cabeza", "migraña", "mareo", "equilibrio"]):
+        return "neurologo"
 
-    # GENERAL
+    if any(p in texto for p in ["respirar", "pulmon", "ahogo"]):
+        return "neumologo"
+
     if any(p in texto for p in ["fiebre", "cansancio", "malestar", "debilidad"]):
-        return "médico general"
+        return "medico_general"
 
     return None
 
 # =========================
-# URGENCIA INTELIGENTE
+# URGENCIA
 # =========================
-
 def detectar_urgencia(texto):
     texto = texto.lower()
 
@@ -77,9 +90,39 @@ def detectar_urgencia(texto):
     return "baja"
 
 # =========================
+# RESPUESTA NATURAL 🔥
+# =========================
+def generar_respuesta_natural(texto, especialista, urgencia):
+
+    respuesta = []
+
+    # inicio humano
+    if "dolor" in texto:
+        respuesta.append("Entiendo que estás sintiendo dolor.")
+    elif "picazon" in texto or "comezon" in texto:
+        respuesta.append("Parece que estás teniendo una molestia en la piel.")
+    else:
+        respuesta.append("Gracias por contarme cómo te sientes.")
+
+    # especialista
+    respuesta.append(f"Por lo que describes, lo más adecuado sería acudir a un {especialista}.")
+
+    # urgencia
+    if urgencia == "alta":
+        respuesta.append("Este caso podría ser urgente, te recomiendo buscar atención médica lo antes posible.")
+    elif urgencia == "media":
+        respuesta.append("No parece grave, pero sería recomendable atenderlo pronto.")
+    else:
+        respuesta.append("Por ahora no parece algo grave, pero observa si hay cambios.")
+
+    # cierre
+    respuesta.append("Si los síntomas empeoran, no dudes en acudir a un centro de salud.")
+
+    return " ".join(respuesta)
+
+# =========================
 # API
 # =========================
-
 @app.route("/analizar", methods=["POST"])
 def analizar():
     data = request.json
@@ -87,23 +130,27 @@ def analizar():
     if not data or "texto" not in data:
         return jsonify({"error": "No se envió texto"}), 400
 
-    texto = data["texto"]
+    texto_original = data["texto"]
+    texto = limpiar_texto(texto_original)
 
-    # 1️⃣ reglas
     especialista = detectar_por_reglas(texto)
 
-    # 2️⃣ IA si no encuentra
     if especialista is None:
         X_test = vectorizer.transform([texto])
         especialista = modelo.predict(X_test)[0]
 
     urgencia = detectar_urgencia(texto)
 
+    mensaje = generar_respuesta_natural(texto, especialista, urgencia)
+
     return jsonify({
+        "mensaje": mensaje,
         "especialista": especialista,
-        "urgencia": urgencia,
-        "recomendacion": "Se recomienda acudir a consulta médica"
+        "urgencia": urgencia
     })
 
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
-    app.run(port=5000)
+    app.run(debug=True, port=5000)
